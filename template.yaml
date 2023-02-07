@@ -1,0 +1,145 @@
+# This is the SAM template that represents the architecture of your serverless application
+# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-template-basics.html
+
+# The AWSTemplateFormatVersion identifies the capabilities of the template
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/format-version-structure.html
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  dotnet-serverless-eventbridge
+
+# Transform section specifies one or more macros that AWS CloudFormation uses to process your template
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/transform-section-structure.html
+Transform:
+- AWS::Serverless-2016-10-31
+
+# Resources declares the AWS resources that you want to include in the stack
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resources-section-structure.html
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Tracing: Active
+    Runtime: dotnet6
+    Architectures:
+      - x86_64
+    MemorySize: 256
+    Timeout: 100
+  Api:
+    TracingEnabled: true
+
+Resources:
+  # Each Lambda function is defined by properties:
+  # https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+
+  # This is a Lambda function config associated with the source code: hello-from-lambda.js
+  atmProducerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src/producer/
+      Handler: Producer::Producer.Function::FunctionHandler
+      Description: A Lambda function that returns a static string.
+      Policies:
+        # Give Lambda basic execution Permission to EventBridge
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource:
+                - '*'
+
+  atmConsumerCase1Fn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src/consumer/
+      Handler: Consumer::Consumer.Function::ConsumerCase1Handler
+
+  atmConsumerCase2Fn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src/consumer/
+      Handler: Consumer::Consumer.Function::ConsumerCase2Handler
+      Events:
+        Trigger:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              source:
+                - custom.myATMapp
+              detail-type:
+                - transaction
+              detail:
+                location:
+                  - "prefix": "NY-"
+
+  atmConsumerCase3Fn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src/consumer/
+      Handler: Consumer::Consumer.Function::ConsumerCase3Handler
+      Events:
+        Trigger:
+          Type: CloudWatchEvent 
+          Properties:
+            Pattern:
+              source:
+                - custom.myATMapp
+              detail-type:
+                - transaction
+              detail:
+                result:
+                  - "anything-but": "approved"
+
+  EventRuleCase1:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Approved transactions"
+      EventPattern:
+        source:
+          - "custom.myATMapp"
+        detail-type:
+          - transaction
+        detail:
+          result:
+            - "approved"
+      State: "ENABLED"
+      Targets:
+        -
+          Arn:
+            Fn::GetAtt:
+              - "atmConsumerCase1Fn"
+              - "Arn"
+          Id: "atmConsumerTarget1"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: "atmConsumerCase1Fn"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "EventRuleCase1"
+          - "Arn"
+
+  ApplicationResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name:
+        Fn::Join:
+        - ''
+        - - ApplicationInsights-SAM-
+          - Ref: AWS::StackName
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+  ApplicationInsightsMonitoring:
+    Type: AWS::ApplicationInsights::Application
+    Properties:
+      ResourceGroupName:
+        Fn::Join:
+        - ''
+        - - ApplicationInsights-SAM-
+          - Ref: AWS::StackName
+      AutoConfigurationEnabled: 'true'
+    DependsOn: ApplicationResourceGroup
